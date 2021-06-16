@@ -1,20 +1,78 @@
-data "template_file" "controller-primary" {
-  template = file("${path.module}/controller-primary.tpl")
+data "cloudinit_config" "cloudinit" {
+  gzip          = false
+  base64_encode = false
 
-  vars = {
-    kube_token               = var.kube_token
-    metal_network_cidr       = var.kubernetes_lb_block
-    metal_auth_token         = var.auth_token
-    metal_project_id         = var.project_id
-    kube_version             = var.kubernetes_version
-    secrets_encryption       = var.secrets_encryption ? "yes" : "no"
-    configure_ingress        = var.configure_ingress ? "yes" : "no"
-    count                    = var.count_x86
-    count_gpu                = var.count_gpu
-    storage                  = var.storage
-    skip_workloads           = var.skip_workloads ? "yes" : "no"
-    workloads                = jsonencode(var.workloads)
-    control_plane_node_count = var.control_plane_node_count
+  part {
+    content_type = "text/x-shellscript"
+    content = templatefile("${path.module}/assets/vars.sh.tpl", {
+      kube_token               = var.kube_token
+      metal_network_cidr       = var.kubernetes_lb_block
+      metal_auth_token         = var.auth_token
+      metal_project_id         = var.project_id
+      kube_version             = var.kubernetes_version
+      secrets_encryption       = var.secrets_encryption ? "yes" : "no"
+      configure_ingress        = var.configure_ingress ? "yes" : "no"
+      count                    = var.count_x86
+      count_gpu                = var.count_gpu
+      storage                  = var.storage
+      skip_workloads           = var.skip_workloads ? "yes" : "no"
+      workloads                = jsonencode(var.workloads)
+      control_plane_node_count = var.control_plane_node_count
+      primary_node_ip          = metal_device.k8s_primary.network.0.address
+    })
+    filename = "/root/vars.sh"
+  }
+
+  part {
+    content_type = "text/x-shellscript"
+    content      = file("${path.module}/assets/controller-primary.sh")
+    filename     = "controller-primary.sh"
+  }
+  part {
+    content_type = "text/x-shellscript"
+    content      = file("${path.module}/assets/controller-standby.sh")
+    filename     = "controller-standby.sh"
+  }
+
+  part {
+    content_type = "text/x-shellscript"
+    content      = file("${path.module}/assets/key_wait_transfer.sh")
+    filename     = "key_wait_transfer.sh"
+  }
+
+  part {
+    content_type = "text/cloud-config"
+    content = templatefile("${path.module}/assets/vars.sh.tpl", {
+      kube_token               = var.kube_token
+      metal_network_cidr       = var.kubernetes_lb_block
+      metal_auth_token         = var.auth_token
+      metal_project_id         = var.project_id
+      kube_version             = var.kubernetes_version
+      secrets_encryption       = var.secrets_encryption ? "yes" : "no"
+      configure_ingress        = var.configure_ingress ? "yes" : "no"
+      count                    = var.count_x86
+      count_gpu                = var.count_gpu
+      storage                  = var.storage
+      skip_workloads           = var.skip_workloads ? "yes" : "no"
+      workloads                = jsonencode(var.workloads)
+      control_plane_node_count = var.control_plane_node_count
+      primary_node_ip          = metal_device.k8s_primary.network.0.address
+    })
+
+  }
+
+  part {
+    content_type = "text/x-shellscript"
+    content      = <<EOT
+    #!/usr/bin/env bash
+    if [[ "$HOSTNAME"=="*primary*" ]]; then
+      . controller-primary.sh
+    else
+      . controller-standby.sh
+      . key_wait_transfer.sh
+    fi
+    EOT
+    filename     = "controller.sh"
   }
 }
 
@@ -24,22 +82,11 @@ resource "metal_device" "k8s_primary" {
   plan             = var.plan_primary
   facilities       = var.facility != "" ? [var.facility] : null
   metro            = var.metro != "" ? var.metro : null
-  user_data        = data.template_file.controller-primary.rendered
+  user_data        = data.cloudinit_config.cloudinit.rendered
   tags             = ["kubernetes", "controller-${var.cluster_name}"]
 
   billing_cycle = "hourly"
   project_id    = var.project_id
-}
-
-data "template_file" "controller-standby" {
-  template = file("${path.module}/controller-standby.tpl")
-
-  vars = {
-    kube_token      = var.kube_token
-    primary_node_ip = metal_device.k8s_primary.network.0.address
-    kube_version    = var.kubernetes_version
-    storage         = var.storage
-  }
 }
 
 resource "metal_device" "k8s_controller_standby" {
@@ -51,37 +98,10 @@ resource "metal_device" "k8s_controller_standby" {
   plan             = var.plan_primary
   facilities       = var.facility != "" ? [var.facility] : null
   metro            = var.metro != "" ? var.metro : null
-  user_data        = data.template_file.controller-standby.rendered
+  user_data        = data.cloudinit_config.cloudinit.rendered
   tags             = ["kubernetes", "controller-${var.cluster_name}"]
   billing_cycle    = "hourly"
   project_id       = var.project_id
-}
-
-resource "null_resource" "key_wait_transfer" {
-  count = var.control_plane_node_count
-
-  connection {
-    type        = "ssh"
-    user        = "root"
-    host        = metal_device.k8s_controller_standby[count.index].access_public_ipv4
-    private_key = var.ssh_private_key_path
-    password    = metal_device.k8s_controller_standby[count.index].root_password
-  }
-
-  provisioner "remote-exec" {
-    inline = ["cloud-init status --wait"]
-  }
-
-  provisioner "local-exec" {
-    environment = {
-      controller           = metal_device.k8s_primary.network.0.address
-      node_addr            = metal_device.k8s_controller_standby[count.index].access_public_ipv4
-      kube_token           = var.kube_token
-      ssh_private_key_path = var.ssh_private_key_path
-    }
-
-    command = "sh ${path.module}/assets/key_wait_transfer.sh"
-  }
 }
 
 resource "metal_ip_attachment" "kubernetes_lb_block" {

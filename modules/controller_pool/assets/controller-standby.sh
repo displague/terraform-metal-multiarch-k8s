@@ -1,5 +1,7 @@
 #!/bin/bash
 
+source vars.sh || ( echo vars.sh not found ; exit 1)
+
 export HOME=/root
 
 function install_docker() {

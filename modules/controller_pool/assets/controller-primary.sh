@@ -1,20 +1,26 @@
 #!/usr/bin/env bash
 
+source vars.sh || ( echo vars.sh not found ; exit 1)
+
 export HOME=/root
 export WORKLOADS=$(echo ${workloads})
-mkdir $HOME/kube
+mkdir -p $HOME/kube
 
 function load_workloads() {
-  echo "{"| tee -a $HOME/workloads.json ; for w in $WORKLOADS; do \ 
-  echo $w | sed 's| |\n|'g | awk '{sub(/:/,"\":\"")}1' | sed 's/.*/"&",/' | tee -a $HOME/workloads.json; \
-  done ; echo "\"applied_at\":\"$(date +%F:%H:%m:%S)\"" | tee -a $HOME/workloads.json \
-  ; echo "}" | tee -a $HOME/workloads.json
+  (
+    echo "{"
+    for w in $WORKLOADS; do
+      echo $w | sed 's| |\n|'g | awk '{sub(/:/,"\":\"")}1' | sed 's/.*/"&",/'
+    done
+    echo '"applied_at":"'$(date +%F:%H:%m:%S)'"'
+    echo "}"
+  ) | tee -a $HOME/workloads.json
 }
 
 function install_docker() {
- echo "Installing Docker..." ; \
- apt-get update; \
- apt-get install -y docker.io jq python3 && \
+ echo "Installing Docker..."
+ apt-get update
+ apt-get install -y docker.io jq python3
  cat << EOF > /etc/docker/daemon.json
  {
    "exec-opts": ["native.cgroupdriver=systemd"]
@@ -23,25 +29,34 @@ EOF
 }
 
 function enable_docker() {
- systemctl enable docker ; \
- systemctl restart docker
+  systemctl enable docker
+  systemctl restart docker
 }
 
 function install_kube_tools {
- echo "Installing Kubeadm tools..." ; \
- swapoff -a  && \
- apt-get update && apt-get install -y apt-transport-https
- curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
- echo "deb http://apt.kubernetes.io/ kubernetes-xenial main" > /etc/apt/sources.list.d/kubernetes.list
- apt-get update
- apt-get install -y kubelet=${kube_version} kubeadm=${kube_version} kubectl=${kube_version}
+  echo "Installing Kubeadm tools..."
+  swapoff -a
+  apt-get update && apt-get install -y apt-transport-https
+  curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
+  echo "deb http://apt.kubernetes.io/ kubernetes-xenial main" > /etc/apt/sources.list.d/kubernetes.list
+  apt-get update
+  apt-get install -y kubelet=${kube_version} kubeadm=${kube_version} kubectl=${kube_version}
 }
 
 function init_cluster_config {
-      export CNI_CIDR="$(cat $HOME/workloads.json | jq .cni_cidr)" && \
-      cat << EOF > /etc/kubeadm-config.yaml
-apiVersion: kubeadm.k8s.io/v1beta1
+  lb_cidr=${metal_network_cidr%%/*}
+  advertise=${lb_cidr}:6443
+  CONTROL_PLANE=$(curl -s http://metadata.platformequinix.com/metadata | jq -r '.network.addresses[] | select(.public == true) | select(.management == true) | select(.address_family == 4) | .address')
+  CNI_CIDR="$(cat $HOME/workloads.json | jq .cni_cidr)"
+  cat << EOF > /etc/kubeadm-config.yaml
+apiVersion: kubeadm.k8s.io/v1beta2
 kind: InitConfiguration
+nodeRegistration:
+  kubeletExtraArgs:
+    cloud-provider: "external"
+localAPIEndpoint:
+  advertiseAddress: ${advertise%%:*}
+  bindPort: ${advertise##*:}
 bootstrapTokens:
 - token: "${kube_token}"
   description: "default kubeadm bootstrap token"
@@ -50,12 +65,12 @@ bootstrapTokens:
 apiVersion: kubeadm.k8s.io/v1beta2
 kind: ClusterConfiguration
 kubernetesVersion: stable
-controlPlaneEndpoint: "$(curl -s http://metadata.platformequinix.com/metadata | jq -r '.network.addresses[] | select(.public == true) | select(.management == true) | select(.address_family == 4) | .address'):6443"
+controlPlaneEndpoint: "$CONTROL_PLANE:6443"
 networking:
   podSubnet: $CNI_CIDR
 certificatesDir: /etc/kubernetes/pki
 EOF
-    kubeadm init --config=/etc/kubeadm-config.yaml ; \
+    kubeadm init --config=/etc/kubeadm-config.yaml
     kubeadm init phase upload-certs --upload-certs
 }
 
