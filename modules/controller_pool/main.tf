@@ -2,7 +2,6 @@ data "cloudinit_config" "cloudinit" {
   gzip          = false
   base64_encode = false
 
-
   part {
     content_type = "text/cloud-config"
     content = templatefile("${path.module}/assets/cloud-config.yaml", {
@@ -78,9 +77,9 @@ data "cloudinit_config" "cloudinit" {
 }
 
 resource "metal_device" "k8s_cp" {
-  count      = var.control_plane_node_count + 1 // todo: change control_plane_node_count to default to 1, with 3 (not 2) representing HA
-  
-  hostname         =format("${var.cluster_name}-controller-cp%02d", count.index)
+  count = var.control_plane_node_count + 1 // todo: change control_plane_node_count to default to 1, with 3 (not 2) representing HA
+
+  hostname         = format("${var.cluster_name}-controller-cp%02d", count.index)
   operating_system = "ubuntu_18_04"
   plan             = var.plan_primary
   facilities       = var.facility != "" ? [var.facility] : null
@@ -89,9 +88,9 @@ resource "metal_device" "k8s_cp" {
   tags             = ["kubernetes", "controller-${var.cluster_name}"]
 
   custom_data = jsonencode({
-    "cp_index" = count.index,
-    "cp_primary" = (count.index == 1),
-    "kube_version"  = var.kubernetes_version,
+    "cp_index"     = count.index,
+    "cp_primary"   = (count.index == 1),
+    "kube_version" = var.kubernetes_version,
   })
 
   billing_cycle = "hourly"

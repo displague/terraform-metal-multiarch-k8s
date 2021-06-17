@@ -85,6 +85,6 @@ variable "ssh_private_key_path" {
 }
 
 variable "workloads" {
-  type        = map
+  type        = map(any)
   description = "Workloads to be applied during provisioning."
 }
